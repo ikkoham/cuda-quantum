@@ -104,5 +104,7 @@ if (CUDA_FOUND AND CUSTATEVEC_ROOT)
   target_link_libraries(rest-remote-platform-server PRIVATE CUDA::cudart_static)
 endif()
 
-target_link_options(rest-remote-platform-server PRIVATE -Wl,--no-as-needed)
+if(NOT APPLE)
+  target_link_options(rest-remote-platform-server PRIVATE -Wl,--no-as-needed)
+endif()
 install(TARGETS rest-remote-platform-server DESTINATION lib)

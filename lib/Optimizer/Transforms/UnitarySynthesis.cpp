@@ -329,7 +329,7 @@ struct TwoQubitOpKAK : public Decomposer {
     components.z = coefficients(3).real();
     phase *= std::exp(1i * coefficients(0));
     /// Final check to verify results
-    auto canVecToMat =
+    [[maybe_unused]] auto canVecToMat =
         canonicalVecToMatrix(components.x, components.y, components.z);
     assert(targetMatrix.isApprox(phase * Eigen::kroneckerProduct(a1, a0) *
                                      canVecToMat *

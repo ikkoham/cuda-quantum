@@ -2697,7 +2697,7 @@ bool QuakeBridgeVisitor::VisitCXXConstructExpr(clang::CXXConstructExpr *x) {
           IRBuilder irBuilder(builder.getContext());
           auto mod =
               builder.getBlock()->getParentOp()->getParentOfType<ModuleOp>();
-          auto result =
+          [[maybe_unused]] auto result =
               irBuilder.loadIntrinsic(mod, getNumQubitsFromCudaqState);
           assert(succeeded(result) && "loading intrinsic should never fail");
           Value state = initials;

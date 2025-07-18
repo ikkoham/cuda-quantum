@@ -179,7 +179,7 @@ public:
           if (isa<func::ReturnOp>(op)) {
             auto loc = op->getLoc();
             auto deleteState = cudaq::deleteCudaqState;
-            auto result = irBuilder.loadIntrinsic(module, deleteState);
+            [[maybe_unused]] auto result = irBuilder.loadIntrinsic(module, deleteState);
             assert(succeeded(result) && "loading intrinsic should never fail");
 
             builder.setInsertionPoint(op);

@@ -59,6 +59,7 @@ macro (create_tests_with_backend NVQIR_BACKEND EXTRA_BACKEND_TESTER)
   target_compile_definitions(${TEST_EXE_NAME} PRIVATE __MATH_LONG_DOUBLE_CONSTANTS)
   target_include_directories(${TEST_EXE_NAME} PRIVATE .)
 
+
   # On GCC, the default is --as-needed for linking, and therefore the
   # nvqir-simulation plugin may not get picked up. This works as is on clang 
   # But here we add it purposefully to avoid that bug. 

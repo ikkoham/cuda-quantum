@@ -73,6 +73,8 @@ function temp_install_if_command_unknown {
       apt-get install -y --no-install-recommends $2
     elif [ -x "$(command -v dnf)" ]; then
       dnf install -y --nobest --setopt=install_weak_deps=False $2
+    elif [ -x "$(command -v brew)" ]; then
+      brew install $2
     else
       echo "No package manager was found to install $2." >&2
     fi
@@ -89,6 +91,8 @@ function remove_temp_installs {
     elif [ -x "$(command -v dnf)" ]; then
       dnf remove -y $PKG_UNINSTALL
       dnf clean all
+    elif [ -x "$(command -v brew)" ]; then
+      brew uninstall $PKG_UNINSTALL
     else
       echo "No package manager configured for clean up." >&2
     fi
@@ -105,7 +109,26 @@ function prepare_exit {
 
 set -e
 trap 'prepare_exit && ((return 0 2>/dev/null) && return 1 || exit 1)' EXIT
-this_file_dir=`dirname "$(readlink -f "${BASH_SOURCE[0]}")"`
+
+# Cross-platform readlink equivalent
+get_real_path() {
+  if [ "$(uname -s)" = "Darwin" ]; then
+    # macOS: use realpath if available, otherwise greadlink
+    if command -v realpath >/dev/null 2>&1; then
+      realpath "$1"
+    elif command -v greadlink >/dev/null 2>&1; then
+      greadlink -f "$1"
+    else
+      brew install coreutils
+      greadlink -f "$1"
+    fi
+  else
+    # Linux: use readlink -f
+    readlink -f "$1"
+  fi
+}
+
+this_file_dir=`dirname "$(get_real_path "${BASH_SOURCE[0]}")"`
 
 # [Toolchain] CMake, ninja and C/C++ compiler
 if $install_all && [ -z "$(echo $exclude_prereq | grep toolchain)" ]; then
@@ -125,24 +148,46 @@ if $install_all && [ -z "$(echo $exclude_prereq | grep toolchain)" ]; then
   fi
   if [ ! -x "$(command -v cmake)" ]; then
     echo "Installing CMake..."
-    temp_install_if_command_unknown wget wget
-    wget https://github.com/Kitware/CMake/releases/download/v3.26.4/cmake-3.26.4-linux-$(uname -m).sh -O cmake-install.sh
-    bash cmake-install.sh --skip-licence --exclude-subdir --prefix=/usr/local
-    rm -rf cmake-install.sh 
+    if [ "$(uname -s)" = "Darwin" ]; then
+      # macOS: Use Homebrew to install CMake
+      if [ -x "$(command -v brew)" ]; then
+        brew install cmake
+      else
+        echo "Error: Homebrew not found. Please install Homebrew first." >&2
+        exit 1
+      fi
+    else
+      # Linux: Download and install CMake binary
+      temp_install_if_command_unknown wget wget
+      wget https://github.com/Kitware/CMake/releases/download/v3.26.4/cmake-3.26.4-linux-$(uname -m).sh -O cmake-install.sh
+      bash cmake-install.sh --skip-licence --exclude-subdir --prefix=/usr/local
+      rm -rf cmake-install.sh 
+    fi
   fi
   if [ ! -x "$(command -v ninja)" ]; then
     echo "Installing Ninja..."
-    temp_install_if_command_unknown wget wget
-    temp_install_if_command_unknown make make
+    if [ "$(uname -s)" = "Darwin" ]; then
+      # macOS: Use Homebrew to install Ninja
+      if [ -x "$(command -v brew)" ]; then
+        brew install ninja
+      else
+        echo "Error: Homebrew not found. Please install Homebrew first." >&2
+        exit 1
+      fi
+    else
+      # Linux: Build from source as pre-built binaries are x86_64 only
+      temp_install_if_command_unknown wget wget
+      temp_install_if_command_unknown make make
 
-    # The pre-built binary for Linux on GitHub is built for x86_64 only, 
-    # see also https://github.com/ninja-build/ninja/issues/2284.
-    wget https://github.com/ninja-build/ninja/archive/refs/tags/v1.11.1.tar.gz
-    tar -xzvf v1.11.1.tar.gz && cd ninja-1.11.1
-    LDFLAGS="-static-libstdc++" cmake -B build
-    cmake --build build
-    mv build/ninja /usr/local/bin/
-    cd .. && rm -rf v1.11.1.tar.gz ninja-1.11.1
+      # The pre-built binary for Linux on GitHub is built for x86_64 only, 
+      # see also https://github.com/ninja-build/ninja/issues/2284.
+      wget https://github.com/ninja-build/ninja/archive/refs/tags/v1.11.1.tar.gz
+      tar -xzvf v1.11.1.tar.gz && cd ninja-1.11.1
+      LDFLAGS="-static-libstdc++" cmake -B build
+      cmake --build build
+      mv build/ninja /usr/local/bin/
+      cd .. && rm -rf v1.11.1.tar.gz ninja-1.11.1
+    fi
   fi
 fi
 
@@ -157,12 +202,13 @@ if [ -n "$ZLIB_INSTALL_PREFIX" ] && [ -z "$(echo $exclude_prereq | grep zlib)" ]
 
     wget https://github.com/madler/zlib/releases/download/v1.3/zlib-1.3.tar.gz
     tar -xzvf zlib-1.3.tar.gz && cd zlib-1.3
-    CC="$CC" CFLAGS="-fPIC" \
+    # TODO: if darsin then add isysroot
+    CC="$CC" CFLAGS="-fPIC -isysroot /Library/Developer/CommandLineTools/SDKs/MacOSX15.5.sdk" \
     ./configure --prefix="$ZLIB_INSTALL_PREFIX" --static
     make CC="$CC" && make install
     cd contrib/minizip 
     autoreconf --install 
-    CC="$CC" CFLAGS="-fPIC" \
+    CC="$CC" CFLAGS="-fPIC -isysroot /Library/Developer/CommandLineTools/SDKs/MacOSX15.5.sdk" \
     ./configure --prefix="$ZLIB_INSTALL_PREFIX" --disable-shared
     make CC="$CC" && make install
     cd ../../.. && rm -rf zlib-1.3.tar.gz zlib-1.3

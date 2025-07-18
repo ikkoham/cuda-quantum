@@ -139,7 +139,7 @@ static Value genConstant(OpBuilder &builder, const cudaq::state *v,
 
     auto createState = is64Bit ? cudaq::createCudaqStateFromDataFP64
                                : cudaq::createCudaqStateFromDataFP32;
-    auto result = irBuilder.loadIntrinsic(substMod, createState);
+    [[maybe_unused]] auto result = irBuilder.loadIntrinsic(substMod, createState);
     assert(succeeded(result) && "loading intrinsic should never fail");
 
     auto arrSize = builder.create<arith::ConstantIntOp>(loc, size, 64);

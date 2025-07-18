@@ -63,8 +63,32 @@ while getopts ":c:j:k:v" opt; do
 done
 OPTIND=$__optind__
 
+# Cross-platform readlink equivalent
+get_real_path() {
+  if [ "$(uname -s)" = "Darwin" ]; then
+    # macOS: use realpath if available, otherwise greadlink
+    if command -v realpath >/dev/null 2>&1; then
+      realpath "$1"
+    elif command -v greadlink >/dev/null 2>&1; then
+      greadlink -f "$1"
+    else
+      # Install coreutils to get greadlink
+      if command -v brew >/dev/null 2>&1; then
+        brew install coreutils
+        greadlink -f "$1"
+      else
+        echo "Error: realpath or greadlink not found. Please install coreutils." >&2
+        exit 1
+      fi
+    fi
+  else
+    # Linux: use readlink -f
+    readlink -f "$1"
+  fi
+}
+
 working_dir=`pwd`
-this_file_dir=`dirname "$(readlink -f "${BASH_SOURCE[0]}")"`
+this_file_dir=`dirname "$(get_real_path "${BASH_SOURCE[0]}")"`
 echo "Configured C compiler: $CC"
 echo "Configured C++ compiler: $CXX"
 
@@ -155,7 +179,7 @@ if [ -z "${llvm_projects##*openmp;*}" ]; then
   echo "- including OpenMP components"
   # There are no suitable distribution components for libomp. 
   # We instead manually build suitable targets.
-  install_targets+=" omp"
+  install_targets+=" install-omptarget-stripped"
   llvm_components+="omptarget;openmp-resource-headers;"
   projects=("${projects[@]/openmp}")
 fi
@@ -222,6 +246,15 @@ cmake_args=" \
   -DMLIR_ENABLE_BINDINGS_PYTHON=$mlir_python_bindings \
   -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
   -DCMAKE_CXX_FLAGS='-w'"
+
+# Add Apple Silicon specific configurations
+if [ "$(uname -s)" = "Darwin" ] && [ "$(uname -m)" = "arm64" ]; then
+  echo "Configuring LLVM build for Apple Silicon..."
+  #cmake_args="$cmake_args \
+    #-DCMAKE_OSX_ARCHITECTURES=arm64 \
+    #-DLLVM_TARGETS_TO_BUILD='AArch64;X86' \
+    #-DLLVM_HOST_TRIPLE=aarch64-apple-darwin"
+fi
 
 if [ -z "$LLVM_CMAKE_CACHE" ]; then 
   LLVM_CMAKE_CACHE=`find "$this_file_dir/.." -path '*/cmake/caches/*' -name LLVM.cmake`

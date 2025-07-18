@@ -23,13 +23,13 @@
 # - glibc including development headers (available via package manager)
 # - git, ninja-build, python3, libpython3-dev (all available via apt install)
 # - LLVM binaries, libraries, and headers as built by scripts/build_llvm.sh.
-# - To include simulator backends that use cuQuantum the packages cuquantum and cuquantum-dev are needed. 
+# - To include simulator backends that use cuQuantum the packages cuquantum and cuquantum-dev are needed.
 # - Additional python dependencies for running and testing: lit pytest numpy (available via pip install)
 # - Additional dependencies for GPU-accelerated components: cuquantum, cutensor, cuda-11-8
 #
 # Note:
 # The CUDA-Q build automatically detects whether the necessary libraries to build
-# GPU-based components are available and will omit them from the build if they are not. 
+# GPU-based components are available and will omit them from the build if they are not.
 #
 # Note:
 # By default, the CUDA-Q is done with warnings-as-errors turned on.
@@ -66,14 +66,38 @@ while getopts ":c:t:v" opt; do
 done
 OPTIND=$__optind__
 
+# Cross-platform readlink equivalent
+get_real_path() {
+  if [ "$(uname -s)" = "Darwin" ]; then
+    # macOS: use realpath if available, otherwise greadlink
+    if command -v realpath >/dev/null 2>&1; then
+      realpath "$1"
+    elif command -v greadlink >/dev/null 2>&1; then
+      greadlink -f "$1"
+    else
+      # Install coreutils to get greadlink
+      if command -v brew >/dev/null 2>&1; then
+        brew install coreutils
+        greadlink -f "$1"
+      else
+        echo "Error: realpath or greadlink not found. Please install coreutils." >&2
+        exit 1
+      fi
+    fi
+  else
+    # Linux: use readlink -f
+    readlink -f "$1"
+  fi
+}
+
 # Run the script from the top-level of the repo
 working_dir=`pwd`
-this_file_dir=`dirname "$(readlink -f "${BASH_SOURCE[0]}")"`
+this_file_dir=`dirname "$(get_real_path "${BASH_SOURCE[0]}")"`
 repo_root=$(cd "$this_file_dir" && git rev-parse --show-toplevel)
 
 # Prepare the build directory
 mkdir -p "$CUDAQ_INSTALL_PREFIX/bin"
-mkdir -p "$working_dir/build" && cd "$working_dir/build" && rm -rf * 
+mkdir -p "$working_dir/build" && cd "$working_dir/build" && rm -rf *
 mkdir -p logs && rm -rf logs/*
 
 if [ -n "$install_toolchain" ]; then
@@ -103,7 +127,7 @@ if [ "$cuda_version" = "" ] || [ "$cuda_major" -lt "11" ] || ([ "$cuda_minor" -l
   echo "CUDA version requirement not satisfied (required: >= 11.8, got: $cuda_version)."
   echo "GPU-accelerated components will be omitted from the build."
   unset cuda_driver
-else 
+else
   echo "CUDA version $cuda_version detected."
   if [ ! -d "$CUQUANTUM_INSTALL_PREFIX" ] || [ -z "$(ls -A "$CUQUANTUM_INSTALL_PREFIX"/* 2> /dev/null)" ]; then
     echo "No cuQuantum installation detected. Please set the environment variable CUQUANTUM_INSTALL_PREFIX to enable cuQuantum integration."
@@ -120,9 +144,18 @@ else
 fi
 
 # Determine linker and linker flags
-if [ -x "$(command -v "$LLVM_INSTALL_PREFIX/bin/ld.lld")" ]; then
-  echo "Configuring nvq++ to use the lld linker by default."
-  NVQPP_LD_PATH="$LLVM_INSTALL_PREFIX/bin/ld.lld"
+if [[ "$OSTYPE" == "darwin"* ]]; then
+  # Use macOS-compatible linker
+  if [ -x "$(command -v "$LLVM_INSTALL_PREFIX/bin/ld64.lld")" ]; then
+    echo "Configuring nvq++ to use the ld64.lld linker for macOS."
+    NVQPP_LD_PATH="$LLVM_INSTALL_PREFIX/bin/ld64.lld"
+  fi
+else
+  # Use standard lld linker for Linux
+  if [ -x "$(command -v "$LLVM_INSTALL_PREFIX/bin/ld.lld")" ]; then
+    echo "Configuring nvq++ to use the lld linker by default."
+    NVQPP_LD_PATH="$LLVM_INSTALL_PREFIX/bin/ld.lld"
+  fi
 fi
 
 # Determine CUDA flags
@@ -131,7 +164,7 @@ if [ -z "$CUDAHOSTCXX" ] && [ -z "$CUDAFLAGS" ]; then
   if [ -x "$CXX" ] && [ -n "$("$CXX" --version | grep -i clang)" ]; then
     CUDAFLAGS+=" --compiler-options --stdlib=libstdc++"
   fi
-  if [ -d "$GCC_TOOLCHAIN" ]; then 
+  if [ -d "$GCC_TOOLCHAIN" ]; then
     # e.g. GCC_TOOLCHAIN=/opt/rh/gcc-toolset-11/root/usr/
     CUDAFLAGS+=" --compiler-options --gcc-toolchain=\"$GCC_TOOLCHAIN\""
   fi
@@ -144,7 +177,7 @@ if [ -n "$(find "$LLVM_INSTALL_PREFIX" -name 'libomp.so')" ]; then
   OpenMP_FLAGS="${OpenMP_FLAGS:-'-fopenmp'}"
 fi
 
-# Generate CMake files 
+# Generate CMake files
 # (utils are needed for custom testing tools, e.g. CircuitCheck)
 echo "Preparing CUDA-Q build with LLVM installation in $LLVM_INSTALL_PREFIX..."
 cmake_args="-G Ninja '"$repo_root"' \
@@ -164,13 +197,13 @@ cmake_args="-G Ninja '"$repo_root"' \
   -DCUDAQ_BUILD_TESTS=${CUDAQ_BUILD_TESTS:-TRUE} \
   -DCUDAQ_TEST_MOCK_SERVERS=${CUDAQ_BUILD_TESTS:-TRUE} \
   -DCMAKE_COMPILE_WARNING_AS_ERROR=${CUDAQ_WERROR:-ON}"
-# Note that even though we specify CMAKE_CUDA_HOST_COMPILER above, it looks like the 
-# CMAKE_CUDA_COMPILER_WORKS checks do *not* use that host compiler unless the CUDAHOSTCXX 
-# environment variable is specified. Setting this variable may hence be necessary in 
-# some environments. On the other hand, this will also make CMake not detect CUDA, if 
-# the set host compiler is not officially supported. We hence don't set that variable 
+# Note that even though we specify CMAKE_CUDA_HOST_COMPILER above, it looks like the
+# CMAKE_CUDA_COMPILER_WORKS checks do *not* use that host compiler unless the CUDAHOSTCXX
+# environment variable is specified. Setting this variable may hence be necessary in
+# some environments. On the other hand, this will also make CMake not detect CUDA, if
+# the set host compiler is not officially supported. We hence don't set that variable
 # here, but keep the definition for CMAKE_CUDA_HOST_COMPILER.
-if $verbose; then 
+if $verbose; then
   echo $cmake_args | xargs cmake
 else
   echo $cmake_args | xargs cmake \
@@ -180,7 +213,7 @@ fi
 # Build and install CUDA-Q
 echo "Building CUDA-Q with configuration $build_configuration..."
 logs_dir=`pwd`/logs
-if $verbose; then 
+if $verbose; then
   ninja install
   status=$?
 else

@@ -516,7 +516,7 @@ QuakeValue qalloc(ImplicitLocOpBuilder &builder, QuakeValue &sizeOrVec) {
       // get the number of qubits
       IRBuilder irBuilder(context);
       auto mod = builder.getBlock()->getParentOp()->getParentOfType<ModuleOp>();
-      auto result = irBuilder.loadIntrinsic(mod, getNumQubitsFromCudaqState);
+      [[maybe_unused]] auto result = irBuilder.loadIntrinsic(mod, getNumQubitsFromCudaqState);
       assert(succeeded(result) && "loading intrinsic should never fail");
       auto numQubits = builder.create<func::CallOp>(
           builder.getI64Type(), getNumQubitsFromCudaqState, ValueRange{value});

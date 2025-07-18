@@ -52,7 +52,14 @@ if(OPENSSL_FOUND)
   message(STATUS "OpenSSL Found, building REST Client.")
 
   target_sources(${LIBRARY_NAME} PRIVATE RestClient.cpp)
-  target_link_libraries(${LIBRARY_NAME} PRIVATE cpr::cpr -Wl,--start-group ZLIB::ZLIB)
+  if(NOT APPLE)
+    target_link_libraries(${LIBRARY_NAME} PRIVATE cpr::cpr -Wl,--start-group ZLIB::ZLIB)
+  else()
+    # macOS: Add missing dependencies that libcurl requires
+    find_library(NGHTTP2_LIBRARY NAMES nghttp2 PATHS /opt/homebrew/lib)
+    find_library(IDN2_LIBRARY NAMES idn2 PATHS /opt/homebrew/lib)
+    target_link_libraries(${LIBRARY_NAME} PRIVATE ZLIB::ZLIB cpr::cpr ${NGHTTP2_LIBRARY} ${IDN2_LIBRARY})
+  endif()
   target_compile_definitions(${LIBRARY_NAME} PRIVATE -DCUDAQ_RESTCLIENT_AVAILABLE)
 endif()
 

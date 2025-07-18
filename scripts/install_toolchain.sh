@@ -8,7 +8,7 @@
 # the terms of the Apache License 2.0 which accompanies this distribution.     #
 # ============================================================================ #
 
-# This script installs the specified C/C++ toolchain, 
+# This script installs the specified C/C++ toolchain,
 # and exports the CC and CXX environment variables.
 #
 # Usage:
@@ -16,8 +16,8 @@
 # -or-
 #   source scripts/install_toolchain.sh -t <toolchain> -e path/to/dir
 #
-# where <toolchain> can be either llvm, clang16, gcc12, or gcc11. 
-# The -e option creates a init_command.sh file in the given directory that 
+# where <toolchain> can be either llvm, clang16, gcc12, or gcc11.
+# The -e option creates a init_command.sh file in the given directory that
 # can be used to reinstall the same toolchain if needed.
 
 __optind__=$OPTIND
@@ -36,6 +36,30 @@ while getopts ":t:e:" opt; do
 done
 OPTIND=$__optind__
 
+# Cross-platform readlink equivalent
+get_real_path() {
+  if [ "$(uname -s)" = "Darwin" ]; then
+    # macOS: use realpath if available, otherwise greadlink
+    if command -v realpath >/dev/null 2>&1; then
+      realpath "$1"
+    elif command -v greadlink >/dev/null 2>&1; then
+      greadlink -f "$1"
+    else
+      # Install coreutils to get greadlink
+      if command -v brew >/dev/null 2>&1; then
+        brew install coreutils
+        greadlink -f "$1"
+      else
+        echo "Error: realpath or greadlink not found. Please install coreutils." >&2
+        exit 1
+      fi
+    fi
+  else
+    # Linux: use readlink -f
+    readlink -f "$1"
+  fi
+}
+
 if [ "$(type -t temp_install_if_command_unknown)" != "function" ]; then
     function temp_install_if_command_unknown {
         if [ ! -x "$(command -v $1)" ]; then
@@ -44,6 +68,15 @@ if [ "$(type -t temp_install_if_command_unknown)" != "function" ]; then
                 apt-get install -y --no-install-recommends $2
             elif [ -x "$(command -v dnf)" ]; then
                 dnf install -y --nobest --setopt=install_weak_deps=False $2
+            elif [ -x "$(command -v brew)" ]; then
+                # macOS with Homebrew - map package names appropriately
+                case $2 in
+                    "gcc-"*) brew install gcc ;;
+                    "g++-"*) brew install gcc ;;
+                    "gfortran-"*) brew install gfortran ;;
+                    "clang-"*) brew install llvm ;;
+                    *) brew install $2 ;;
+                esac
             else
                 echo "No package manager was found to install $2." >&2
             fi
@@ -65,8 +98,8 @@ if [ "${toolchain#gcc}" != "$toolchain" ]; then
         apt-get update && apt-get install -y --no-install-recommends \
             gcc-$gcc_version g++-$gcc_version gfortran-$gcc_version
 
-        CC="$(find_executable gcc-$gcc_version)" 
-        CXX="$(find_executable g++-$gcc_version)" 
+        CC="$(find_executable gcc-$gcc_version)"
+        CXX="$(find_executable g++-$gcc_version)"
         FC="$(find_executable gfortran-$gcc_version)"
 
     elif [ -x "$(command -v dnf)" ]; then
@@ -77,6 +110,13 @@ if [ "${toolchain#gcc}" != "$toolchain" ]; then
         CC="$(find_executable gcc "$gcc_root")"
         CXX="$(find_executable g++ "$gcc_root")"
         FC="$(find_executable gfortran "$gcc_root")"
+
+    elif [ -x "$(command -v brew)" ]; then
+        brew install gcc@$gcc_version
+
+        CC="$(command -v gcc-$gcc_version || command -v gcc)"
+        CXX="$(command -v g++-$gcc_version || command -v g++)"
+        FC="$(command -v gfortran-$gcc_version || command -v gfortran)"
 
     else
       echo "No supported package manager detected." >&2
@@ -94,13 +134,22 @@ elif [ "$toolchain" = "clang16" ]; then
         apt-get update && apt-get install -y --no-install-recommends clang-16
     elif [ -x "$(command -v dnf)" ]; then
         dnf install -y --nobest --setopt=install_weak_deps=False clang-16.0.6
+    elif [ -x "$(command -v brew)" ]; then
+        # macOS: Install LLVM via Homebrew (includes Clang 16)
+        brew install llvm@16
+        llvm_prefix="$(brew --prefix llvm)"
+        CC="$llvm_prefix/bin/clang"
+        CXX="$llvm_prefix/bin/clang++"
+        FC="$llvm_prefix/bin/flang-new"
     else
         echo "No supported package manager detected." >&2
     fi
 
-    CC="$(find_executable clang-16)" 
-    CXX="$(find_executable clang++-16)" 
-    FC="$(find_executable flang-new-16)"
+    if [ -z "$CC" ]; then
+        CC="$(find_executable clang-16)"
+        CXX="$(find_executable clang++-16)"
+        FC="$(find_executable flang-new-16)"
+    fi
 
 elif [ "$toolchain" = "llvm" ]; then
 
@@ -109,7 +158,7 @@ elif [ "$toolchain" = "llvm" ]; then
 
         if [ ! -x "$(command -v "$CC")" ] || [ ! -x "$(command -v "$CXX")" ]; then
             # We use the clang to bootstrap the llvm build since it is faster than gcc.
-            source "$(readlink -f "${BASH_SOURCE[0]}")" -t clang16 || \
+            source "$(get_real_path "${BASH_SOURCE[0]}")" -t clang16 || \
             echo -e "\e[01;31mError: Failed to install clang compiler for bootstrapping.\e[0m" >&2
             toolchain=llvm
             if [ ! -x "$(command -v "$CC")" ] || [ ! -x "$(command -v "$CXX")" ]; then
@@ -120,11 +169,11 @@ elif [ "$toolchain" = "llvm" ]; then
 
         temp_install_if_command_unknown ninja ninja-build
         temp_install_if_command_unknown cmake cmake
-        this_file_dir=`dirname "$(readlink -f "${BASH_SOURCE[0]}")"`
+        this_file_dir=`dirname "$(get_real_path "${BASH_SOURCE[0]}")"`
         LLVM_INSTALL_PREFIX="$LLVM_INSTALL_PREFIX" LLVM_PROJECTS='clang;lld;runtimes' \
         LLVM_SOURCE="$LLVM_SOURCE" LLVM_BUILD_FOLDER="$LLVM_BUILD_FOLDER" \
         CC="$CC" CXX="$CXX" bash "$this_file_dir/build_llvm.sh" -c Release -v
-        if [ ! $? -eq 0 ]; then 
+        if [ ! $? -eq 0 ]; then
             echo -e "\e[01;31mError: Failed to build LLVM toolchain from source.\e[0m" >&2
             (return 0 2>/dev/null) && return 3 || exit 3
         fi
@@ -152,7 +201,7 @@ fi
 
 if [ -n "$PKG_UNINSTALL" ]; then
     echo "Uninstalling packages used for bootstrapping: $PKG_UNINSTALL"
-    if [ -x "$(command -v apt-get)" ]; then  
+    if [ -x "$(command -v apt-get)" ]; then
         apt-get remove -y $PKG_UNINSTALL
         apt-get autoremove -y --purge
     elif [ -x "$(command -v dnf)" ]; then
@@ -164,16 +213,16 @@ if [ -n "$PKG_UNINSTALL" ]; then
     unset PKG_UNINSTALL
 fi
 
-if [ -x "$(command -v "$CC")" ] && [ -x "$(command -v "$CXX")" ]; then 
-    export CC="$CC" && export CXX="$CXX" 
+if [ -x "$(command -v "$CC")" ] && [ -x "$(command -v "$CXX")" ]; then
+    export CC="$CC" && export CXX="$CXX"
     echo "Installed $toolchain toolchain."
     if [ -x "$(command -v "$FC")" ]; then export FC="$FC"
     else unset FC && echo -e "\e[01;31mWarning: No fortran compiler installed.\e[0m" >&2
     fi
 
-    if [ "$export_dir" != "" ]; then 
+    if [ "$export_dir" != "" ]; then
         mkdir -p "$export_dir"
-        this_file=`readlink -f "${BASH_SOURCE[0]}"`
+        this_file=`get_real_path "${BASH_SOURCE[0]}"`
         cat "$this_file" > "$export_dir/install_toolchain.sh"
         env_variables="LLVM_INSTALL_PREFIX=\"$LLVM_INSTALL_PREFIX\" LLVM_SOURCE=\"$LLVM_SOURCE\" LLVM_BUILD_FOLDER=\"$LLVM_BUILD_FOLDER\""
         echo "$env_variables source \"$export_dir/install_toolchain.sh\" -t $toolchain" > "$export_dir/init_command.sh"
