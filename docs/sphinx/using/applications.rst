@@ -335,9 +335,17 @@ This page contains a number of different applications implemented using CUDA-Q. 
     <div class="notebook-entry" data-tags="gpu, dynamics, noiseless">
         <a href="../applications/python/entanglement_acc_hamiltonian_simulation" class="notebook-title">Entanglement Accelerates Quantum Simulation</a>
         <div class="notebook-content">
-            Learn how entanglement growth can *reduce* the Trotter error of the first-order product formula (PF1), recovering the result from the [paper](https://www.nature.com/articles/s41567-025-02945-2) using NVIDIA CUDA-Q. 
+            Learn how entanglement growth can *reduce* the Trotter error of the first-order product formula (PF1), recovering the result from the [paper](https://www.nature.com/articles/s41567-025-02945-2) using NVIDIA CUDA-Q.
         </div>
         <img src="../_static/app_title_images/entanglement_acc_hamiltonian_simulation_preview.png" alt="PF1 error decreases as entanglement spreads" class="notebook-image">
+    </div>
+
+    <div class="notebook-entry" data-tags="noisless,optimization,gpu,aiforq">
+        <a href="../applications/python/qaoa_gpt.html" class="notebook-title">QAOA-GPT: GPT model for generating efficient QAOA quantum circuit.</a>
+        <div class="notebook-content">
+            Learn how to implement QAOA-GPT algorithm using CUDA-Q.
+        </div>
+        <img src="../_static/app_title_images/qaoa_gpt_toc.png" alt="QAOA-GPt for generating QAOa circuit." class="notebook-image">
     </div>
 
     <script>
