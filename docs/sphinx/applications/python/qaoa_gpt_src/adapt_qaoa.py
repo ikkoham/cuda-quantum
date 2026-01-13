@@ -136,12 +136,38 @@ def adapt_qaoa_run(hamiltonian,
         # compute the gradient and find the mixer pool with large values.
         # If norm is below the predefined threshold, stop calculation
 
+        com_op_adjusted = [op * -1j for op in com_op]
+        unique_pauli_map = {}
+        all_terms_info = []
+        
+        for op in com_op_adjusted:
+            current_op_info = []
+            
+            if isinstance(op, cudaq.SpinOperatorTerm):
+                op_terms = [op]
+            else:
+                op_terms = op
+                
+            for term in op_terms:
+                c = term.evaluate_coefficient()
+                if abs(c) < 1e-12: continue
+                s = term.get_pauli_word(term.max_degree + 1)
+
+                if s not in unique_pauli_map:
+                    unique_pauli_map[s] = cudaq.SpinOperator.from_word(s)
+                current_op_info.append((c, s))
+            all_terms_info.append(current_op_info)
+            
+        unique_strings = list(unique_pauli_map.keys())
+        unique_ops = [unique_pauli_map[s] for s in unique_strings]
+        
+        results = cudaq.observe(grad, unique_ops, state, ham_words, ham_coeffs, gamma_0)
+        results_map = {s: r.expectation() for s, r in zip(unique_strings, results)}
+            
         gradient_vec = []
-        for op in com_op:
-            op = op * -1j
-            gradient_vec.append(
-                cudaq.observe(grad, op, state, ham_words, ham_coeffs,
-                              gamma_0).expectation())
+        for info_list in all_terms_info:
+            val = sum(c * results_map[s] for c, s in info_list)
+            gradient_vec.append(val)
 
         # Compute the norm of the gradient vector
         norm = np.linalg.norm(np.array(gradient_vec))
