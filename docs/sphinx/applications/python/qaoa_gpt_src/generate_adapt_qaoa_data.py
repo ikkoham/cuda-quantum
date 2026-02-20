@@ -132,7 +132,6 @@ def generate_data_max_cut(output_dir='adapt_results',
     hostname = socket.gethostname()
     ts_string = datetime.now().strftime("%y-%m-%d__%H_%M")
 
-    results_df = pd.DataFrame()
     hams_df = pd.DataFrame()
     graphs_df = pd.DataFrame(
         columns=['graph_num', 'g_method', 'edgelist_json', 'H_frob_norm'])
@@ -344,17 +343,6 @@ def generate_data_max_cut(output_dir='adapt_results',
                     'elapsed_time': elapsed_time
                 })
 
-                results_df = pd.DataFrame(
-                    result_rows,
-                    columns=[
-                        'method', 'graph_name', 'graph_num', 'trial_num',
-                        'n_nodes', 'init_gamma', 'energy_list', 'true_energy',
-                        'optimizer', 'pool_type', 'edge_weight_scaling_coef',
-                        'edge_weight_norm_coef', 'mixer_pool_pauli_word',
-                        'mixer_pool_index', 'gamma_coef', 'beta_coef',
-                        'approx_ratio', 'cut_adapt', 'cut_classical',
-                        'num_layers', 'optimizer_success_flag', 'elapsed_time'
-                    ])
                 # Early stopping: End of trial if approximation ratio is reached
                 if adapt_qaoa_result[5] >= approx_ratio:
                     if verbose:
@@ -374,6 +362,19 @@ def generate_data_max_cut(output_dir='adapt_results',
     #write results to files
     if verbose:
         print("Writing results to files...")
+
+    # Build results DataFrame once after all trials complete
+    results_df = pd.DataFrame(
+        result_rows,
+        columns=[
+            'method', 'graph_name', 'graph_num', 'trial_num',
+            'n_nodes', 'init_gamma', 'energy_list', 'true_energy',
+            'optimizer', 'pool_type', 'edge_weight_scaling_coef',
+            'edge_weight_norm_coef', 'mixer_pool_pauli_word',
+            'mixer_pool_index', 'gamma_coef', 'beta_coef',
+            'approx_ratio', 'cut_adapt', 'cut_classical',
+            'num_layers', 'optimizer_success_flag', 'elapsed_time'
+        ])
 
     # Save results DataFrame to CSV
     results_df.to_csv(os.path.join(output_dir, 'res',
