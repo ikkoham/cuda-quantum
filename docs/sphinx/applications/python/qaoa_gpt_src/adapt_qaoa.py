@@ -23,6 +23,59 @@ import os
 from qaoa_gpt_src.adapt_qaoa_pool import all_pool, qaoa_mixer, qaoa_single_x, qaoa_double
 from qaoa_gpt_src.hamiltonian_graph import term_coefficients, term_words
 
+# --- Monkey-patch cudaq.observe to support multi-term SpinOperator lists (PR #3835) ---
+import cudaq.runtime.observe as _obs_mod
+from cudaq.mlir._mlir_libs._quakeDialects import cudaq_runtime as _crt
+
+_original_observe = _obs_mod.observe
+
+class _SimpleObserveResult:
+    """Lightweight result wrapper — avoids C++ canonicalization assertion."""
+    __slots__ = ('_exp',)
+    def __init__(self, exp_val):
+        self._exp = float(exp_val)
+    def expectation(self):
+        return self._exp
+
+def _patched_observe(kernel, spin_operator, *args, **kwargs):
+    # If not a list, delegate directly
+    if not isinstance(spin_operator, list):
+        return _original_observe(kernel, spin_operator, *args, **kwargs)
+
+    # Merge all operators into one big Hamiltonian
+    localOp = _crt.SpinOperator.empty()
+    for o in spin_operator:
+        localOp += o
+
+    # Get the combined ObserveResult (single circuit execution)
+    combined = _original_observe(kernel, localOp, *args, **kwargs)
+
+    # Extract per-operator expectations (PR #3835 logic).
+    # combined.expectation(term) returns raw <P> without coefficient,
+    # so we must multiply by the term's coefficient ourselves.
+    def _term_exp(term):
+        coeff = term.evaluate_coefficient()
+        if term.is_identity():
+            return coeff
+        return coeff * combined.expectation(term)
+
+    results = []
+    for op in spin_operator:
+        exp_val = 0.0 + 0.0j
+        if isinstance(op, _crt.SpinOperatorTerm):
+            exp_val = _term_exp(op)
+        elif op.term_count == 1:
+            exp_val = _term_exp(next(iter(op)))
+        else:
+            for t in op:
+                exp_val += _term_exp(t)
+        results.append(_SimpleObserveResult(exp_val.real))
+    return results
+
+_obs_mod.observe = _patched_observe
+cudaq.observe = _patched_observe
+# --- End monkey-patch ---
+
 @cudaq.kernel
 def kernel_qaoa(qubits_num: int, ham_words: list[cudaq.pauli_word],
                 ham_coeffs: list[complex],
@@ -164,28 +217,8 @@ def adapt_qaoa_run(hamiltonian,
 
     istep = 1
 
-    # --- PRE-LOOP: static quantities computed once before ADAPT iterations ---
+    # --- PRE-LOOP: commutator operators adjusted by -1j ---
     com_op_adjusted = [op * -1j for op in com_op]
-    unique_pauli_map = {}
-    all_terms_info = []
-
-    for op in com_op_adjusted:
-        current_op_info = []
-        if isinstance(op, cudaq.SpinOperatorTerm):
-            op_terms = [op]
-        else:
-            op_terms = op
-        for term in op_terms:
-            c = term.evaluate_coefficient()
-            if abs(c) < 1e-12: continue
-            s = term.get_pauli_word(term.max_degree + 1)
-            if s not in unique_pauli_map:
-                unique_pauli_map[s] = cudaq.SpinOperator.from_word(s)
-            current_op_info.append((c, s))
-        all_terms_info.append(current_op_info)
-
-    unique_strings = list(unique_pauli_map.keys())
-    unique_ops = [unique_pauli_map[s] for s in unique_strings]
 
     # --- Persistent worker pool for MPS-parallel Jacobian ---
     _pkg_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -213,13 +246,8 @@ def adapt_qaoa_run(hamiltonian,
             # compute the gradient and find the mixer pool with large values.
             # If norm is below the predefined threshold, stop calculation
 
-            results = cudaq.observe(grad, unique_ops, state, ham_words, ham_coeffs, gamma_0)
-            results_map = {s: r.expectation() for s, r in zip(unique_strings, results)}
-
-            gradient_vec = []
-            for info_list in all_terms_info:
-                val = sum(c * results_map[s] for c, s in info_list)
-                gradient_vec.append(val)
+            results = cudaq.observe(grad, com_op_adjusted, state, ham_words, ham_coeffs, gamma_0)
+            gradient_vec = [r.expectation() for r in results]
 
             # Compute the norm of the gradient vector
             norm = np.linalg.norm(np.array(gradient_vec))
