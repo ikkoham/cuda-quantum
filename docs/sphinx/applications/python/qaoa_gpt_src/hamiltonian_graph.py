@@ -40,6 +40,45 @@ def max_cut_ham(edges):
     return ham
 
 
+def mis_ham(graph, penalty=2.0):
+    """
+    Generate a Hamiltonian for the Maximum Independent Set problem.
+
+    H_MIS = -sum_i (1-Z_i)/2 + P * sum_{(i,j) in E} (1-Z_i)(1-Z_j)/4
+
+    Expanded per-term:
+      Z_i coeff:  (1/2 - P*deg(i)/4)
+      ZZ coeff:   P/4 per edge
+      Identity:   -n/2 + P*|E|/4
+
+    Args:
+        graph: NetworkX graph (edge weights are ignored).
+        penalty (float): Penalty coefficient P for adjacency violations.
+
+    Returns:
+        cudaq.SpinOperator for the MIS problem.
+    """
+    nodes = list(graph.nodes)
+    edges = list(graph.edges)
+    n = len(nodes)
+    m = len(edges)
+
+    # Constant (identity) term
+    ham = (-n / 2.0 + penalty * m / 4.0) * spin.i(0)
+
+    # Linear Z_i terms
+    deg = dict(graph.degree())
+    for i in nodes:
+        coeff = 0.5 - penalty * deg[i] / 4.0
+        ham += coeff * spin.z(i)
+
+    # ZZ terms for each edge
+    for u, v in edges:
+        ham += (penalty / 4.0) * spin.z(u) * spin.z(v)
+
+    return ham
+
+
 # Collect coefficients from a spin operator so we can pass them to a kernel
 def term_coefficients(ham: cudaq.SpinOperator) -> list[complex]:
     result = []

@@ -71,6 +71,8 @@ def generate_random_graph(n, p_init, p_final, seed_g, methods=None):
             n1 = random.randint(2, n - 1)
             n2 = n - n1
             G = nx.complete_bipartite_graph(n1, n2)
+        elif method == "expander":
+            G = nx.gnm_random_graph(n, 2 * n, seed=seed_g)
         else:
             raise ValueError(f"Unknown method: {method}")
 

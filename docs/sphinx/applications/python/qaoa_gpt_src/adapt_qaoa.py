@@ -20,7 +20,9 @@ import random
 import multiprocessing
 from concurrent.futures import ProcessPoolExecutor
 import os
-from qaoa_gpt_src.adapt_qaoa_pool import all_pool, qaoa_mixer, qaoa_single_x, qaoa_double
+from qaoa_gpt_src.adapt_qaoa_pool import (all_pool, all_pool_full, qaoa_mixer,
+                                          qaoa_single_x, qaoa_double, qaoa_double_full,
+                                          qaoa_single_y, qaoa_mixer_y)
 from qaoa_gpt_src.hamiltonian_graph import term_coefficients, term_words
 
 @cudaq.kernel
@@ -107,9 +109,12 @@ def adapt_qaoa_run(hamiltonian,
         pools = qaoa_single_x(qubits_num)
     elif pool == 'qaoa_double_ops':
         pools = qaoa_double(qubits_num)
+    elif pool == 'all_pool_full':
+        pools = all_pool_full(qubits_num)
     else:
         raise ValueError(
-            "Invalid pool name. Choose from 'all_pool', 'qaoa_mixer', 'qaoa_single_x', or 'qaoa_double'."
+            "Invalid pool name. Choose from 'all_pool', 'all_pool_full', 'qaoa_mixer', "
+            "'qaoa_single_x', or 'qaoa_double'."
         )
 
     if verbose:
