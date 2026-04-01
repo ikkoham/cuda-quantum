@@ -27,7 +27,7 @@ from qaoa_gpt_src.hamiltonian_graph import term_coefficients, term_words, max_cu
 from qaoa_gpt_src.graph_functions import generate_random_graph, graph_to_edgelist, edgelist_to_graph, graph_to_adj_m, add_rand_weights_to_graph, norm_elist_weights
 
 from qaoa_gpt_src.max_cut_classical_sol import brute_force_max_cut, one_exchange, simulated_annealing_maxcut
-from qaoa_gpt_src.mis_classical_sol import brute_force_mis, greedy_mis, simulated_annealing_mis
+from qaoa_gpt_src.mis_classical_sol import brute_force_mis, greedy_mis, simulated_annealing_mis, _is_independent_set
 
 # Set the target to NVIDIA GPU
 #######################################################
@@ -158,8 +158,9 @@ def generate_data_max_cut(output_dir='adapt_results',
 
         if graphs_input_json == "N/A":
             cur_graph_name = f"Graph_{graph_num+1}"
+            graph_seed = seed_g + graph_num if seed_g is not None else None
             g_unweighted, g_method = generate_random_graph(
-                n_nodes, p_init=p_init, p_final=p_final, seed_g=seed_g, methods=["erdos_renyi"])
+                n_nodes, p_init=p_init, p_final=p_final, seed_g=graph_seed, methods=["erdos_renyi"])
             if weighted:
                 g = add_rand_weights_to_graph(g_unweighted,
                                               seed_weight=seed_weight, neg_weights=use_negative_weights)
@@ -394,71 +395,109 @@ def generate_data_max_cut(output_dir='adapt_results',
 
 
 ######################################################
+def load_completed_graphs(output_dir):
+    """Scan existing res/*.csv files, return set of completed graph_num values."""
+    completed = set()
+    res_dir = os.path.join(output_dir, 'res')
+    if not os.path.isdir(res_dir):
+        return completed
+    for fname in os.listdir(res_dir):
+        if fname.endswith('_results.csv'):
+            try:
+                df = pd.read_csv(os.path.join(res_dir, fname), usecols=['graph_num'])
+                completed.update(df['graph_num'].unique())
+            except Exception as e:
+                print(f"Warning: could not read {fname}: {e}")
+    return completed
+
+
 def generate_data_mis(output_dir='adapt_results_mis',
                       graphs_number=1,
                       graphs_input_json="N/A",
                       n_nodes=8,
-                      penalty=2.0,
+                      penalty=1.5,
                       use_brute_force=True,
-                      use_greedy=True,
-                      use_simulated_annealing=True,
-                      op_pool='all_pool',
+                      use_greedy=False,
+                      use_simulated_annealing=False,
+                      op_pool='all_pool_full',
                       init_gamma: list[float] = [0.01],
                       trials_per_graph=1,
                       optimizer='BFGS',
                       approx_ratio=0.97,
-                      max_iter=10,
-                      norm_threshold=1e-3,
-                      energy_threshold=1e-9,
-                      multi_gamma=False,
+                      max_iter=15,
+                      norm_threshold=1e-4,
+                      energy_threshold=1e-15,
+                      no_gamma_early_stop=False,
+                      graph_methods=None,
                       p_init=0.3,
                       p_final=0.9,
                       seed_g=None,
                       seed_adapt=None,
+                      start=0,
+                      resume=False,
                       verbose=True):
     """
     Generates data for ADAPT-QAOA on the Maximum Independent Set problem.
 
-    MIS seeks the largest set of vertices such that no two are adjacent.
-    Edge weights are ignored (unweighted MIS).
+    Supports resumable, parallel-job-safe operation: when resume=True,
+    already-completed graph_num values are skipped automatically.
 
     Args:
         output_dir (str): Directory to save the results.
         graphs_number (int): Number of graphs to generate or process.
-        graphs_input_json (str): Path to a JSON file with graph data. If "N/A", generates random graphs.
+        graphs_input_json (str): Path to a JSON file with graph data.
+            If "N/A", generates random graphs.
         n_nodes (int): Number of nodes in each graph.
-        penalty (float): Penalty coefficient P for adjacency constraint in the MIS Hamiltonian.
-        use_brute_force (bool): Whether to compute the brute force MIS solution.
-        use_greedy (bool): Whether to compute the greedy MIS approximation.
-        use_simulated_annealing (bool): Whether to compute the SA MIS solution.
+        penalty (float): Penalty coefficient P for adjacency constraint.
+        use_brute_force (bool): Compute brute-force MIS solution.
+        use_greedy (bool): Compute greedy MIS approximation.
+        use_simulated_annealing (bool): Compute SA MIS solution.
         op_pool (str): Operator pool type.
-        init_gamma (list): Initial gamma values for ADAPT-QAOA trials.
+        init_gamma (list): Initial gamma values for ADAPT-QAOA.
         trials_per_graph (int): Number of trials per graph.
         optimizer (str): Optimizer for ADAPT-QAOA.
-        approx_ratio (float): Approximation ratio threshold for early stopping.
-        max_iter (int): Maximum ADAPT-QAOA iterations.
+        approx_ratio (float): Approximation ratio threshold for
+            ADAPT-QAOA layer-level early stopping.
+        max_iter (int): Maximum ADAPT-QAOA iterations (layers).
         norm_threshold (float): Gradient norm threshold.
         energy_threshold (float): Energy convergence threshold.
-        multi_gamma (bool): Whether to continue trying gamma values after approx_ratio is met.
-        p_init (float): Initial probability for Erdos-Renyi graph generation.
-        p_final (float): Final probability for Erdos-Renyi graph generation.
-        seed_g (int): Random seed for graph generation.
-        seed_adapt (int): Random seed for ADAPT-QAOA.
-        verbose (bool): Whether to print detailed logs.
+        no_gamma_early_stop (bool): If True, run all gamma values
+            without early stopping on the gamma loop.
+        graph_methods (list): Graph generation methods
+            (default: ["expander"]).
+        p_init (float): Initial probability for graph generation.
+        p_final (float): Final probability for graph generation.
+        seed_g (int): Base random seed for graph generation.
+            Each graph gets seed_g + graph_num.
+        seed_adapt (int): Base random seed for ADAPT-QAOA.
+            If same as seed_g, each graph gets a per-graph seed.
+        start (int): Starting graph index (0-based).
+        resume (bool): If True, skip already-completed graphs.
+        verbose (bool): Print detailed logs.
 
     Returns:
         None: Saves results to the specified output directory.
     """
+    import random
+
+    if graph_methods is None:
+        graph_methods = ["expander"]
 
     ensure_dirs(output_dir)
 
     pid = os.getpid()
     ts_string = datetime.now().strftime("%y-%m-%d__%H_%M")
 
-    graphs_df = pd.DataFrame(
-        columns=['graph_num', 'g_method', 'edgelist_json', 'H_frob_norm'])
+    # Resume: skip already-completed graphs
+    completed = set()
+    if resume:
+        completed = load_completed_graphs(output_dir)
+        if completed:
+            print(f"Found {len(completed)} already-completed graph_num values")
 
     # Load graphs from JSON if provided
+    json_graphs_dict = None
+    graph_names_list = None
     if graphs_input_json != "N/A":
         with open(graphs_input_json, 'r') as f:
             json_graphs_dict = json.load(f)
@@ -466,62 +505,61 @@ def generate_data_mis(output_dir='adapt_results_mis',
         graph_names_list = list(json_graphs_dict.keys())
 
     if verbose:
-        print(f"[MIS] Generating or processing {graphs_number} graphs...")
+        print(f"[MIS] Processing {graphs_number} graphs (start={start})...")
 
     graph_rows = []
     result_rows = []
 
-    for graph_num in range(graphs_number):
+    for graph_num in range(start, start + graphs_number):
+        graph_num_1based = graph_num + 1
 
-        if graphs_input_json == "N/A":
-            cur_graph_name = f"Graph_{graph_num+1}"
-            # MIS uses unweighted graphs
-            g, g_method = generate_random_graph(
-                n_nodes, p_init=p_init, p_final=p_final, seed_g=seed_g,
-                methods=["erdos_renyi"])
+        if graph_num_1based in completed:
+            print(f"Skipping graph {graph_num} (graph_num={graph_num_1based} already done)")
+            continue
+
+        # Deterministic per-graph seed
+        if seed_g is not None:
+            graph_seed = seed_g + graph_num + n_nodes * 100000
+            random.seed(graph_seed)
+            np.random.seed(graph_seed)
         else:
-            cur_graph_name = graph_names_list[graph_num]
+            graph_seed = None
+
+        adapt_seed = graph_seed if seed_adapt == seed_g else seed_adapt
+
+        # Generate or load graph
+        if json_graphs_dict is not None:
+            idx = graph_num - start
+            cur_graph_name = graph_names_list[idx]
             cur_graph_elist = json_graphs_dict[cur_graph_name]["elist"]
             n_nodes = json_graphs_dict[cur_graph_name]["n_nodes"]
             g = edgelist_to_graph(cur_graph_elist, num_vertices=n_nodes)
             g_method = "input_file"
+        else:
+            cur_graph_name = f"Graph_{graph_num_1based}"
+            g, g_method = generate_random_graph(
+                n_nodes, p_init=p_init, p_final=p_final,
+                seed_g=graph_seed, methods=graph_methods)
 
         if verbose:
-            print(f"Processing {cur_graph_name}...")
-            print(f"Graph method: {g_method}")
-            print(f"Graph edges: {list(g.edges)}")
+            print(f"\n--- Graph {graph_num} (1-based: {graph_num_1based}), "
+                  f"seed={graph_seed}, edges={g.number_of_edges()} ---")
 
+        # Edge list (1-based for tokenization)
         e_list = graph_to_edgelist(g)
-        e_list_mod = [
-            (node1 + 1, node2 + 1, weight) for (node1, node2, weight) in e_list
-        ]
+        e_list_mod = [(u + 1, v + 1, w) for u, v, w in e_list]
         edgelist_json = json.dumps(e_list_mod)
 
-        ###############################################
-        # Build the MIS Hamiltonian (ignores edge weights)
+        # Build MIS Hamiltonian
         spin_ham = mis_ham(g, penalty=penalty)
-
         h_frob_norm = np.linalg.norm(spin_ham.to_matrix())
-        if verbose:
-            print(f"Frobenius norm of the MIS Hamiltonian: {h_frob_norm}")
 
-        graph_rows.append({
-            'graph_num': graph_num + 1,
-            'g_method': g_method,
-            'edgelist_json': edgelist_json,
-            'H_frob_norm': h_frob_norm
-        })
-
-        graphs_df = pd.DataFrame(
-            graph_rows,
-            columns=['graph_num', 'g_method', 'edgelist_json', 'H_frob_norm'])
-
-        ############################################
         # Classical MIS solutions
+        bf_energy, bf_set, bf_bitstring = None, None, None
         if use_brute_force:
             bf_energy, bf_set, bf_bitstring = brute_force_mis(g)
             if verbose:
-                print(f"Brute-force MIS size: {-bf_energy}, set: {bf_set}")
+                print(f"Brute-force MIS size: {-bf_energy}, bitstring: {bf_bitstring}")
 
         if use_greedy:
             greedy_energy, greedy_set, greedy_bitstring = greedy_mis(g)
@@ -533,140 +571,134 @@ def generate_data_mis(output_dir='adapt_results_mis',
             if verbose:
                 print(f"SA MIS size: {-sa_energy}, set: {sa_set}")
 
-        ################################################
-        # Determine classical reference energy for approximation ratio
+        # Determine classical reference
         if use_brute_force:
             true_energy = bf_energy
-            classical_mis = bf_bitstring
+            classical_cut = bf_bitstring
         elif use_greedy:
             true_energy = greedy_energy
-            classical_mis = greedy_bitstring
+            classical_cut = greedy_bitstring
         elif use_simulated_annealing:
             true_energy = sa_energy
-            classical_mis = sa_bitstring
+            classical_cut = sa_bitstring
         else:
             true_energy = -999.0
-            classical_mis = "N/A"
+            classical_cut = "N/A"
 
-        # Quantum MIS using ADAPT-QAOA
-        if verbose:
-            print(f"Preparing to run ADAPT-QAOA (MIS) for graph {graph_num+1}...")
+        graph_rows.append({
+            'graph_num': graph_num_1based,
+            'g_method': g_method,
+            'edgelist_json': edgelist_json,
+            'H_frob_norm': h_frob_norm
+        })
 
+        # ADAPT-QAOA for each gamma
         for gamma in init_gamma:
-            for trial_num in range(trials_per_graph):
+            if verbose:
+                print(f"  gamma={gamma} ...", end=' ', flush=True)
 
+            start_time = time.time()
+            if graph_seed is not None:
+                cudaq.set_random_seed(graph_seed)
+
+            adapt_qaoa_result = adapt_qaoa_run(
+                spin_ham,
+                n_nodes,
+                pool=op_pool,
+                gamma_0=gamma,
+                norm_threshold=norm_threshold,
+                energy_threshold=energy_threshold,
+                approx_ratio=approx_ratio,
+                true_energy=true_energy,
+                optimizer=optimizer,
+                max_iter=max_iter,
+                seed_adapt=adapt_seed,
+                verbose=False)
+
+            elapsed = time.time() - start_time
+
+            # Convert to list and fix pool indices to 1-based
+            if isinstance(adapt_qaoa_result, tuple):
+                adapt_qaoa_result = list(adapt_qaoa_result)
+            adapt_qaoa_result[2] = [int(i) + 1 for i in adapt_qaoa_result[2]]
+
+            ar = adapt_qaoa_result[5]
+
+            # Sampling verification
+            sampled_bitstring = adapt_qaoa_result[6]
+            sampled_nodes = {i for i, bit in enumerate(sampled_bitstring) if bit == '1'}
+            sampled_mis_size = len(sampled_nodes)
+            is_feasible = _is_independent_set(g, sampled_nodes)
+            is_optimal = (is_feasible and bf_energy is not None
+                          and sampled_mis_size == -bf_energy)
+
+            if verbose:
+                print(f"ratio={ar:.4f}, layers={adapt_qaoa_result[7]}, "
+                      f"time={elapsed:.1f}s, "
+                      f"sampled={sampled_bitstring}, size={sampled_mis_size}, "
+                      f"feasible={is_feasible}, optimal={is_optimal}")
+
+            result_rows.append({
+                'method': 'ADAPT-QAOA',
+                'graph_name': cur_graph_name,
+                'graph_num': graph_num_1based,
+                'trial_num': 1,
+                'n_nodes': n_nodes,
+                'init_gamma': gamma,
+                'optimizer': optimizer,
+                'pool_type': op_pool,
+                'edge_weight_scaling_coef': 1.0,
+                'edge_weight_norm_coef': 1.0,
+                'energy_list': adapt_qaoa_result[0],
+                'true_energy': true_energy,
+                'mixer_pool_pauli_word': adapt_qaoa_result[1],
+                'mixer_pool_index': adapt_qaoa_result[2],
+                'gamma_coef': adapt_qaoa_result[3],
+                'beta_coef': adapt_qaoa_result[4],
+                'approx_ratio': ar,
+                'cut_adapt': adapt_qaoa_result[6],
+                'cut_classical': classical_cut,
+                'num_layers': adapt_qaoa_result[7],
+                'optimizer_success_flag': adapt_qaoa_result[8],
+                'elapsed_time': elapsed,
+                'sampled_mis_size': sampled_mis_size,
+                'is_feasible': is_feasible,
+                'is_optimal': is_optimal,
+            })
+
+            if not no_gamma_early_stop and ar >= approx_ratio:
                 if verbose:
-                    print(
-                        f"Running ADAPT-QAOA (MIS) for graph {graph_num+1}, trial {trial_num+1}...")
-                    print(f"Using initial gamma: {gamma}")
-                    print("Running ADAPT-QAOA...")
-
-                qubits_num = len(g.nodes)
-                g0 = gamma
-
-                start_time = time.time()
-
-                adapt_qaoa_result = adapt_qaoa_run(
-                    spin_ham,
-                    qubits_num,
-                    pool=op_pool,
-                    gamma_0=g0,
-                    norm_threshold=norm_threshold,
-                    energy_threshold=energy_threshold,
-                    approx_ratio=approx_ratio,
-                    true_energy=true_energy,
-                    optimizer=optimizer,
-                    max_iter=max_iter,
-                    seed_adapt=seed_adapt,
-                    verbose=verbose)
-
-                end_time = time.time()
-                elapsed_time = end_time - start_time
-
-                if isinstance(adapt_qaoa_result, tuple):
-                    adapt_qaoa_result = list(adapt_qaoa_result)
-                    adapt_qaoa_result[2] = [
-                        int(i) + 1 for i in adapt_qaoa_result[2]
-                    ]
-                    adapt_qaoa_result = tuple(adapt_qaoa_result)
-                else:
-                    adapt_qaoa_result[2] = [
-                        int(i) + 1 for i in adapt_qaoa_result[2]
-                    ]
-
-                if verbose:
-                    print(
-                        f"ADAPT-QAOA (MIS) completed in {elapsed_time:.2f} seconds.")
-                    print('Energy list: ', adapt_qaoa_result[0])
-                    print('Mixer pool as pauli word: ', adapt_qaoa_result[1])
-                    print('Mixer pool as index: ', adapt_qaoa_result[2])
-                    print('gamma list: ', adapt_qaoa_result[3])
-                    print('beta list: ', adapt_qaoa_result[4])
-                    print('Approx. ratio: ', adapt_qaoa_result[5])
-                    print('MIS bitstring: ', adapt_qaoa_result[6])
-                    print('Number of layers: ', adapt_qaoa_result[7])
-                    print('Optimizer success flag: ', adapt_qaoa_result[8])
-                    print('\n')
-
-                result_rows.append({
-                    'method': 'ADAPT-QAOA',
-                    'problem': 'MIS',
-                    'graph_name': cur_graph_name,
-                    'graph_num': graph_num + 1,
-                    'trial_num': trial_num + 1,
-                    'n_nodes': n_nodes,
-                    'penalty': penalty,
-                    'init_gamma': gamma,
-                    'optimizer': optimizer,
-                    'pool_type': op_pool,
-                    'energy_list': adapt_qaoa_result[0],
-                    'true_energy': true_energy,
-                    'mixer_pool_pauli_word': adapt_qaoa_result[1],
-                    'mixer_pool_index': adapt_qaoa_result[2],
-                    'gamma_coef': adapt_qaoa_result[3],
-                    'beta_coef': adapt_qaoa_result[4],
-                    'approx_ratio': adapt_qaoa_result[5],
-                    'mis_adapt': adapt_qaoa_result[6],
-                    'mis_classical': classical_mis,
-                    'num_layers': adapt_qaoa_result[7],
-                    'optimizer_success_flag': adapt_qaoa_result[8],
-                    'elapsed_time': elapsed_time
-                })
-
-                if adapt_qaoa_result[5] >= approx_ratio:
-                    if verbose:
-                        print(
-                            f"Approximation ratio {adapt_qaoa_result[5]} reached, stopping early.")
-                    break
-            if adapt_qaoa_result[5] >= approx_ratio and not multi_gamma:
-                if verbose:
-                    print(
-                        f"Approximation ratio {adapt_qaoa_result[5]} reached for graph {graph_num+1}, stopping further trials.")
+                    print(f"  -> approx_ratio {ar:.4f} >= {approx_ratio}, stopping gamma loop")
                 break
 
-    if verbose:
-        print("[MIS] Writing results to files...")
+    # Write CSVs
+    result_columns = [
+        'method', 'graph_name', 'graph_num', 'trial_num',
+        'n_nodes', 'init_gamma', 'energy_list', 'true_energy',
+        'optimizer', 'pool_type', 'edge_weight_scaling_coef',
+        'edge_weight_norm_coef', 'mixer_pool_pauli_word',
+        'mixer_pool_index', 'gamma_coef', 'beta_coef',
+        'approx_ratio', 'cut_adapt', 'cut_classical',
+        'num_layers', 'optimizer_success_flag', 'elapsed_time',
+        'sampled_mis_size', 'is_feasible', 'is_optimal'
+    ]
+    graph_columns = ['graph_num', 'g_method', 'edgelist_json', 'H_frob_norm']
 
-    results_df = pd.DataFrame(
-        result_rows,
-        columns=[
-            'method', 'problem', 'graph_name', 'graph_num', 'trial_num',
-            'n_nodes', 'penalty', 'init_gamma', 'energy_list', 'true_energy',
-            'optimizer', 'pool_type', 'mixer_pool_pauli_word',
-            'mixer_pool_index', 'gamma_coef', 'beta_coef',
-            'approx_ratio', 'mis_adapt', 'mis_classical',
-            'num_layers', 'optimizer_success_flag', 'elapsed_time'
-        ])
+    if result_rows:
+        res_path = os.path.join(output_dir, 'res',
+                                f'pid{pid}_{ts_string}_results.csv')
+        graph_path = os.path.join(output_dir, 'graphs',
+                                  f'pid{pid}_{ts_string}_graphs.csv')
 
-    results_df.to_csv(os.path.join(output_dir, 'res',
-                                   f'pid{pid}_{ts_string}_results.csv'),
-                      index=False)
+        pd.DataFrame(result_rows, columns=result_columns).to_csv(
+            res_path, index=False)
+        pd.DataFrame(graph_rows, columns=graph_columns).to_csv(
+            graph_path, index=False)
 
-    graphs_df.to_csv(os.path.join(output_dir, 'graphs',
-                                  f'pid{pid}_{ts_string}_graphs.csv'),
-                     index=False)
+        print(f"\nWrote {len(result_rows)} result rows to {res_path}")
+        print(f"Wrote {len(graph_rows)} graph rows to {graph_path}")
+    else:
+        print("\nNo new graphs to process (all already completed).")
 
     if verbose:
         print("[MIS] Data generation completed successfully.")
-
-    return

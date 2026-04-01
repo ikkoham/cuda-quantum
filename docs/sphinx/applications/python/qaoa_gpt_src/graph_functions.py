@@ -50,6 +50,7 @@ def generate_random_graph(n, p_init, p_final, seed_g, methods=None):
             "random_regular", "bipartite"
         ]
     method = random.choice(methods)
+    retry = 0
     while True:
         if method == "erdos_renyi":
             p = random.uniform(p_init, p_final)
@@ -66,18 +67,21 @@ def generate_random_graph(n, p_init, p_final, seed_g, methods=None):
             if n * d % 2 == 0:
                 G = nx.random_regular_graph(d, n)
             else:
+                retry += 1
                 continue
         elif method == "bipartite":
             n1 = random.randint(2, n - 1)
             n2 = n - n1
             G = nx.complete_bipartite_graph(n1, n2)
         elif method == "expander":
-            G = nx.gnm_random_graph(n, 2 * n, seed=seed_g)
+            retry_seed = seed_g + retry * 10000000 if seed_g is not None else None
+            G = nx.gnm_random_graph(n, 2 * n, seed=retry_seed)
         else:
             raise ValueError(f"Unknown method: {method}")
 
         if G.number_of_edges() > 0 and nx.is_connected(G):
             break
+        retry += 1
     return G, method
 
 

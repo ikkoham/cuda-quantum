@@ -374,7 +374,8 @@ def adapt_qaoa_run(hamiltonian,
                                               theta,
                                               method='BFGS',
                                               jac=parameter_shift,
-                                              tol=1e-5)
+                                              tol=1e-5,
+                                              options={'maxiter': 100})
                         E_current = result_vqe.fun
                         theta = result_vqe.x.tolist()
                         if verbose:
@@ -388,7 +389,7 @@ def adapt_qaoa_run(hamiltonian,
                                               theta,
                                               method='BFGS',
                                               jac=parallel_2point_jac,
-                                              options={'gtol': 1e-4})
+                                              options={'gtol': 1e-4, 'maxiter': 100})
                         E_current = result_vqe.fun
                         theta = result_vqe.x.tolist()
                         if verbose:
@@ -397,6 +398,7 @@ def adapt_qaoa_run(hamiltonian,
                             print('Optimizer exited successfully: ',
                                   result_vqe.success,
                                   flush=True)
+
 
                 elif optimizer == 'L-BFGS-B':
                     if parameter_shift:
